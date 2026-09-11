@@ -1,7 +1,5 @@
 #! /usr/bin/env bash
 
-set -eu
-
 # Directory this script lives in, and the repo root one level up.
 # Only used by --debug, which builds from this checkout instead of AUR.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
