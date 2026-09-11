@@ -1249,11 +1249,41 @@ static int xone_dongle_power_off_clients(struct xone_dongle *dongle)
 	return xone_dongle_toggle_pairing(dongle, false);
 }
 
-static void xone_dongle_destroy(struct xone_dongle *dongle)
+/*
+ * Forcibly tear down every remaining GIP client/adapter, regardless of
+ * whether the device cooperated (e.g. acknowledged a power-off request).
+ * This is what actually stops a client driver's activity: gip_destroy_adapter()
+ * unregisters the client device, which runs the driver's .remove() callback
+ * (e.g. gip_headset_remove() cancels the headset's audio hrtimers) before
+ * returning. Callers that need no further USB traffic from any client (e.g.
+ * suspend, about to reprogram the radio) must call this unconditionally
+ * rather than relying on a best-effort handshake that can time out.
+ */
+static void xone_dongle_destroy_clients(struct xone_dongle *dongle)
 {
 	struct xone_dongle_client *client;
-	struct urb *urb;
+	unsigned long flags;
 	int i;
+
+	for (i = 0; i < XONE_DONGLE_MAX_CLIENTS; i++) {
+		spin_lock_irqsave(&dongle->clients_lock, flags);
+		client = dongle->clients[i];
+		dongle->clients[i] = NULL;
+		spin_unlock_irqrestore(&dongle->clients_lock, flags);
+
+		if (!client)
+			continue;
+
+		gip_destroy_adapter(client->adapter);
+		kfree(client);
+	}
+
+	atomic_set(&dongle->client_count, 0);
+}
+
+static void xone_dongle_destroy(struct xone_dongle *dongle)
+{
+	struct urb *urb;
 
 	if (dongle->fw_state < XONE_DONGLE_FW_STATE_ERROR) {
 		pr_debug("%s: Firmware not loaded, stopping work", __func__);
@@ -1267,15 +1297,7 @@ static void xone_dongle_destroy(struct xone_dongle *dongle)
 	cancel_delayed_work_sync(&dongle->pairing_work);
 	cancel_delayed_work_sync(&dongle->pairing_scan_work);
 
-	for (i = 0; i < XONE_DONGLE_MAX_CLIENTS; i++) {
-		client = dongle->clients[i];
-		if (!client)
-			continue;
-
-		gip_destroy_adapter(client->adapter);
-		kfree(client);
-		dongle->clients[i] = NULL;
-	}
+	xone_dongle_destroy_clients(dongle);
 
 	usb_kill_anchored_urbs(&dongle->urbs_out_busy);
 
@@ -1377,9 +1399,23 @@ static int xone_dongle_suspend(struct usb_interface *intf, pm_message_t message)
 	}
 
 	err = xone_dongle_power_off_clients(dongle);
-	if (err)
-		dev_err(dongle->mt.dev, "%s: power off failed: %d\n",
+	if (err) {
+		/*
+		 * The clients did not confirm power-off in time (e.g. a
+		 * headset's continuous audio traffic delayed/dropped the
+		 * acknowledgment). Their GIP adapters - and critically, a
+		 * headset's audio hrtimer, which otherwise keeps submitting
+		 * USB traffic on the same bulk endpoint the WoW commands
+		 * below use - are still live at this point. Force-destroy
+		 * them now so nothing can race the radio suspend below;
+		 * relying on the handshake alone left that traffic running
+		 * straight through suspend and into resume.
+		 */
+		dev_err(dongle->mt.dev,
+			"%s: power off failed: %d, forcing client teardown\n",
 			__func__, err);
+		xone_dongle_destroy_clients(dongle);
+	}
 
 	usb_kill_anchored_urbs(&dongle->urbs_in_busy);
 	usb_kill_anchored_urbs(&dongle->urbs_out_busy);
@@ -1486,9 +1522,7 @@ static int xone_dongle_post_reset(struct usb_interface *intf)
 static int xone_dongle_reset_resume(struct usb_interface *intf)
 {
 	struct xone_dongle *dongle = usb_get_intfdata(intf);
-	struct xone_dongle_client *client;
 	struct urb *urb;
-	int i;
 
 	pr_debug("%s", __func__);
 
@@ -1516,15 +1550,7 @@ static int xone_dongle_reset_resume(struct usb_interface *intf)
 	cancel_delayed_work_sync(&dongle->pairing_work);
 	cancel_delayed_work_sync(&dongle->pairing_scan_work);
 
-	for (i = 0; i < XONE_DONGLE_MAX_CLIENTS; i++) {
-		client = dongle->clients[i];
-		if (!client)
-			continue;
-		gip_destroy_adapter(client->adapter);
-		kfree(client);
-		dongle->clients[i] = NULL;
-	}
-	atomic_set(&dongle->client_count, 0);
+	xone_dongle_destroy_clients(dongle);
 
 	usb_kill_anchored_urbs(&dongle->urbs_out_busy);
 
