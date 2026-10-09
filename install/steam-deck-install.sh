@@ -1,14 +1,29 @@
 #! /usr/bin/env bash
 
-if [[ $1 == "remove" ]]; then
-	sudo pacman -Rcns xone-dkms
+set -eu
 
-	echo ""
-	echo ""
-	echo "Done!"
-	echo "Just reboot your Deck :)"
+if [ "$(id -u)" -ne 0 ]; then
+    echo 'This script must be run as root!' >&2
+    exit 1
+fi
 
-	exit 0
+if [ ! -f install.sh ] || [ ! -f install/firmware.sh ]; then
+    echo 'This script must be run from the root of the xone repository!' >&2
+    exit 1
+fi
+
+if [ "${1:-}" == remove ]; then
+    ./uninstall.sh
+
+    echo ""
+    echo "Done!"
+    echo "Just reboot your Deck :)"
+    echo ""
+    echo "Optionally, lock your deck and remove password:"
+    echo "  steamos-readonly enable"
+    echo "  passwd deck"
+
+    exit 0
 fi
 
 ro_status=$(steamos-readonly status)
@@ -22,62 +37,22 @@ pacman-key --init
 pacman-key --populate archlinux
 pacman-key --populate holo
 
-mkdir xone-install
-cd xone-install || exit 1
-
-AUR_LINK="https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h="
-ITER=0
-while [[ ! -e PKGBUILD_XONE && "$ITER" -lt 5 ]]; do
-	curl "${AUR_LINK}xone-dkms" -o PKGBUILD_XONE
-	ITER=$(( ITER + 1 ))
-done
-
-if [[ $ITER -eq 5 ]]; then
-	echo "Error when downloading PKGBUILD for xone. Exiting..."
-	exit 1
-fi
-
-ITER=0
-while [[ ! -e PKGBUILD_FIRMWARE && "$ITER" -lt 5 ]]; do
-	curl "${AUR_LINK}xone-dongle-firmware" -o PKGBUILD_FIRMWARE
-	ITER=$(( ITER + 1 ))
-done
-
-if [[ $ITER -eq 5 ]]; then
-	echo "Error when downloading PKGBUILD for xone firmware. Exiting..."
-	exit 1
-fi
-
-# to ABSOLUTELY make sure we have acces when running sudo -u deck
-chown -R deck:deck .
-chmod 777 .
-
 echo ""
 echo "Don't worry about \"error: command failed to execute correctly\""
 echo ""
 
+# SteamOS ships its own kernel package, so the matching headers have to be
+# resolved dynamically instead of depending on the generic "linux-headers"
 linux=$(pacman -Qsq linux-neptune | grep -e "[0-9]$" | tail -n 1)
-pacman -Syu --noconfirm base-devel fakeroot glibc git \
+pacman -Syu --noconfirm base-devel dkms git curl libarchive \
     "$linux" "$linux-headers" linux-api-headers
-
-# Install build dependencies manually
-pacman -Syu --noconfirm --asdeps dkms w3m html-xml-utils
-
-# build and install seaprately to avoid repeated password prompts
-sudo -u deck makepkg -Ccf -p PKGBUILD_XONE
-sudo -u deck makepkg -Ccf -p PKGBUILD_FIRMWARE
-
-pacman -U --noconfirm --asdeps xone-dongle-firmware-*.tar.zst
-pacman -U --noconfirm xone-dkms-*.tar.zst
-
-# Remove unneeded build dependencies
-pacman -Rcns --noconfirm w3m html-xml-utils
 
 echo ""
 echo "Again, don't worry about this ^"
+echo ""
 
-cd ..
-rm -rf xone-install
+./install.sh "$@"
+./install/firmware.sh --skip-disclaimer
 
 echo ""
 echo ""

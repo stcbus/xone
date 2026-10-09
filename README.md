@@ -162,13 +162,18 @@ First, let's set a password
 # (optional, skip if you've already done this in the past)
 passwd deck
 ```
-Run installation script
+Clone the repository and run the Steam Deck install script (handles disabling
+read-only mode and installing the SteamOS-specific build dependencies, then
+installs `xone` from this source the same way `make install` does)
 ```bash
-sudo sh -c "$(curl -fsSL https://raw.githubusercontent.com/dlundqvist/xone/master/install/steam-deck-install.sh)"
+git clone https://github.com/dlundqvist/xone
+cd xone
+sudo install/steam-deck-install.sh
 ```
+**NOTE:** Pass `--debug` to enable debug logging, just like `install.sh`.
 #### Uninstall:
 ```bash
-sudo pacman -Rcns xone-dkms
+sudo install/steam-deck-install.sh remove
 ```
 Optionally, lock your deck and  remove password
 ```bash
